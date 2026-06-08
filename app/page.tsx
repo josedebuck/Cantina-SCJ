@@ -22,10 +22,10 @@ import {
 // ─── Helpers de caja ────────────────────────────────────────────────────────
 
 const BOX_FRACTIONS = [
-  { label: "Vacía", value: 0 },
-  { label: "¼",     value: 0.25 },
-  { label: "½",     value: 0.5 },
-  { label: "¾",     value: 0.75 },
+  { label: "Vacia", value: 0 },
+  { label: "1/4",   value: 0.25 },
+  { label: "1/2",   value: 0.5 },
+  { label: "3/4",   value: 0.75 },
   { label: "Llena", value: 1 },
 ];
 
