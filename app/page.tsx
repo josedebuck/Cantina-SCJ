@@ -17,9 +17,13 @@ import {
   Trash2,
   Check,
   Box,
+  ShoppingCart,
+  Minus,
+  ChevronUp,
+  ChevronDown,
 } from "lucide-react";
 
-// ─── Helpers de caja ────────────────────────────────────────────────────────
+// ─── Helpers de caja ─────────────────────────────────────────────────────────
 
 const BOX_FRACTIONS = [
   { label: "Vacia", value: 0 },
@@ -33,13 +37,10 @@ function stockLabel(units: number, boxSize: number): string {
   if (units === 0) return "Sin stock";
   const fullBoxes = Math.floor(units / boxSize);
   const remainder = units % boxSize;
-
   if (remainder === 0)
     return fullBoxes === 1 ? "1 caja" : `${fullBoxes} cajas`;
-
   const frac = remainder / boxSize;
-  const fracLabel = frac <= 0.3 ? "¼" : frac <= 0.6 ? "½" : "¾";
-
+  const fracLabel = frac <= 0.3 ? "1/4" : frac <= 0.6 ? "1/2" : "3/4";
   if (fullBoxes === 0) return `${fracLabel} caja`;
   return `${fullBoxes} caja${fullBoxes > 1 ? "s" : ""} + ${fracLabel}`;
 }
@@ -55,7 +56,7 @@ function isLow(units: number, boxSize: number): boolean {
   return units < boxSize;
 }
 
-// ─── Types locales ──────────────────────────────────────────────────────────
+// ─── Types ───────────────────────────────────────────────────────────────────
 
 type HistoryEntry = {
   productName: string;
@@ -70,27 +71,37 @@ type EditState = {
   box_size: string;
 };
 
-// ─── Componente principal ────────────────────────────────────────────────────
+type OrderItem = {
+  product: Product;
+  qty: number;
+};
+
+// ─── Componente principal ─────────────────────────────────────────────────────
 
 export default function Home() {
   const router = useRouter();
 
-  const [loading, setLoading]           = useState(true);
-  const [products, setProducts]         = useState<Product[]>([]);
-  const [search, setSearch]             = useState("");
-  const [activeTab, setActiveTab]       = useState<"downstairs" | "upstairs">("downstairs");
-  const [history, setHistory]           = useState<HistoryEntry[]>([]);
-  const [showHistory, setShowHistory]   = useState(false);
-  const [showAdd, setShowAdd]           = useState(false);
-  const [editState, setEditState]       = useState<EditState | null>(null);
+  const [loading, setLoading]             = useState(true);
+  const [products, setProducts]           = useState<Product[]>([]);
+  const [search, setSearch]               = useState("");
+  const [activeTab, setActiveTab]         = useState<"downstairs" | "upstairs">("downstairs");
+  const [history, setHistory]             = useState<HistoryEntry[]>([]);
+  const [showHistory, setShowHistory]     = useState(false);
+  const [showAdd, setShowAdd]             = useState(false);
+  const [editState, setEditState]         = useState<EditState | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
-  const [exactInputs, setExactInputs]   = useState<Record<string, string>>({});
+  const [exactInputs, setExactInputs]     = useState<Record<string, string>>({});
+
+  // Calculadora
+  const [order, setOrder]           = useState<OrderItem[]>([]);
+  const [orderOpen, setOrderOpen]   = useState(false);
+  const [orderQty, setOrderQty]     = useState<Record<string, string>>({}); // qty input por producto en la lista
 
   // Formulario nuevo producto
-  const [newName, setNewName]           = useState("");
-  const [newPrice, setNewPrice]         = useState("");
-  const [newBoxSize, setNewBoxSize]     = useState("12");
-  const [newImageUrl, setNewImageUrl]   = useState("");
+  const [newName, setNewName]       = useState("");
+  const [newPrice, setNewPrice]     = useState("");
+  const [newBoxSize, setNewBoxSize] = useState("12");
+  const [newImageUrl, setNewImageUrl] = useState("");
 
   // ── Auth ──
   useEffect(() => {
@@ -106,7 +117,6 @@ export default function Home() {
     init();
   }, []);
 
-  // ── Data ──
   const fetchProducts = async () => {
     const { data, error } = await supabase
       .from("products")
@@ -121,7 +131,7 @@ export default function Home() {
       ...prev.slice(0, 49),
     ]);
 
-  // ── Acciones ──
+  // ── Stock ──
 
   const handleSetStock = async (
     id: string,
@@ -130,14 +140,11 @@ export default function Home() {
   ) => {
     const product = products.find((p) => p.id === id);
     if (!product) return;
-
     const update =
       location === "downstairs"
         ? { stock_downstairs: newStock, stock_upstairs: product.stock_upstairs }
         : { stock_downstairs: product.stock_downstairs, stock_upstairs: newStock };
-
     await supabase.from("products").update(update).eq("id", id);
-
     const prev = location === "downstairs" ? product.stock_downstairs : product.stock_upstairs;
     const diff = newStock - prev;
     const sign = diff >= 0 ? "+" : "";
@@ -146,24 +153,18 @@ export default function Home() {
     await fetchProducts();
   };
 
-  const handleTransfer = async (
-    id: string,
-    from: "downstairs" | "upstairs"
-  ) => {
+  const handleTransfer = async (id: string, from: "downstairs" | "upstairs") => {
     const product = products.find((p) => p.id === id);
     if (!product) return;
-
     const amount = from === "downstairs" ? product.stock_downstairs : product.stock_upstairs;
     if (amount === 0) return;
-
     const update =
       from === "downstairs"
         ? { stock_downstairs: 0, stock_upstairs: product.stock_upstairs + amount }
         : { stock_downstairs: product.stock_downstairs + amount, stock_upstairs: 0 };
-
     await supabase.from("products").update(update).eq("id", id);
     const to = from === "downstairs" ? "Arriba" : "Abajo";
-    logHistory(product.name, `Transferido ${stockLabel(amount, product.box_size)} → ${to}`);
+    logHistory(product.name, `Transferido ${stockLabel(amount, product.box_size)} -> ${to}`);
     await fetchProducts();
   };
 
@@ -206,7 +207,41 @@ export default function Home() {
     await fetchProducts();
   };
 
+  // ── Calculadora ──
+
+  const addToOrder = (product: Product, qty: number) => {
+    if (qty <= 0) return;
+    setOrder((prev) => {
+      const existing = prev.find((i) => i.product.id === product.id);
+      if (existing) {
+        return prev.map((i) =>
+          i.product.id === product.id ? { ...i, qty: i.qty + qty } : i
+        );
+      }
+      return [...prev, { product, qty }];
+    });
+  };
+
+  const updateOrderQty = (productId: string, qty: number) => {
+    if (qty <= 0) {
+      setOrder((prev) => prev.filter((i) => i.product.id !== productId));
+    } else {
+      setOrder((prev) =>
+        prev.map((i) => (i.product.id === productId ? { ...i, qty } : i))
+      );
+    }
+  };
+
+  const clearOrder = () => {
+    setOrder([]);
+    setOrderOpen(false);
+  };
+
+  const orderTotal = order.reduce((sum, i) => sum + i.product.price * i.qty, 0);
+  const orderCount = order.reduce((sum, i) => sum + i.qty, 0);
+
   // ── Derivados ──
+
   const filteredProducts = products.filter((p) =>
     p.name.toLowerCase().includes(search.toLowerCase())
   );
@@ -222,7 +257,6 @@ export default function Home() {
       return isLow(stock, p.box_size);
     });
 
-  // ── Loading ──
   if (loading) {
     return (
       <div className="min-h-screen bg-zinc-950 flex items-center justify-center">
@@ -234,9 +268,8 @@ export default function Home() {
     );
   }
 
-  // ── Render ──
   return (
-    <div className="min-h-screen bg-zinc-950 text-white pb-24">
+    <div className="min-h-screen bg-zinc-950 text-white" style={{ paddingBottom: orderOpen ? "360px" : "88px" }}>
 
       {/* ── HEADER ── */}
       <header className="sticky top-0 z-30 bg-zinc-950 border-b border-zinc-800">
@@ -251,9 +284,7 @@ export default function Home() {
             <button
               onClick={() => setShowHistory((v) => !v)}
               className={`p-2 rounded-lg transition-colors ${
-                showHistory
-                  ? "bg-amber-400 text-zinc-950"
-                  : "bg-zinc-800 text-zinc-400"
+                showHistory ? "bg-amber-400 text-zinc-950" : "bg-zinc-800 text-zinc-400"
               }`}
             >
               <Clock className="w-4 h-4" />
@@ -270,7 +301,6 @@ export default function Home() {
           </div>
         </div>
 
-        {/* Tabs */}
         <div className="flex border-t border-zinc-800">
           {(["downstairs", "upstairs"] as const).map((tab) => (
             <button
@@ -295,17 +325,13 @@ export default function Home() {
       {showHistory && (
         <div className="mx-4 mt-4 bg-zinc-900 border border-zinc-700 rounded-xl overflow-hidden">
           <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-700">
-            <span className="font-mono text-xs uppercase tracking-widest text-amber-400">
-              Historial
-            </span>
+            <span className="font-mono text-xs uppercase tracking-widest text-amber-400">Historial</span>
             <button onClick={() => setShowHistory(false)} className="text-zinc-500">
               <X className="w-4 h-4" />
             </button>
           </div>
           {history.length === 0 ? (
-            <p className="text-zinc-600 text-sm text-center py-6 font-mono">
-              Sin actividad todavía
-            </p>
+            <p className="text-zinc-600 text-sm text-center py-6 font-mono">Sin actividad todavia</p>
           ) : (
             <div className="divide-y divide-zinc-800 max-h-64 overflow-y-auto">
               {history.map((h, i) => (
@@ -315,10 +341,7 @@ export default function Home() {
                     <p className="text-xs text-zinc-500 font-mono">{h.action}</p>
                   </div>
                   <span className="text-xs text-zinc-600 font-mono">
-                    {h.timestamp.toLocaleTimeString("es-AR", {
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })}
+                    {h.timestamp.toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" })}
                   </span>
                 </div>
               ))}
@@ -338,15 +361,10 @@ export default function Home() {
           </div>
           <div className="flex flex-wrap gap-2">
             {lowStockProducts.map((p) => {
-              const stock =
-                activeTab === "downstairs" ? p.stock_downstairs : p.stock_upstairs;
+              const stock = activeTab === "downstairs" ? p.stock_downstairs : p.stock_upstairs;
               return (
-                <span
-                  key={p.id}
-                  className="text-xs bg-red-900/50 text-red-300 px-2 py-1 rounded-lg font-mono"
-                >
-                  {p.name}{" "}
-                  <strong>({stockLabel(stock, p.box_size)})</strong>
+                <span key={p.id} className="text-xs bg-red-900/50 text-red-300 px-2 py-1 rounded-lg font-mono">
+                  {p.name} <strong>({stockLabel(stock, p.box_size)})</strong>
                 </span>
               );
             })}
@@ -354,7 +372,7 @@ export default function Home() {
         </div>
       )}
 
-      {/* ── BÚSQUEDA ── */}
+      {/* ── BUSQUEDA ── */}
       <div className="px-4 mt-4">
         <div className="relative">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
@@ -366,10 +384,7 @@ export default function Home() {
             className="w-full pl-10 pr-10 py-3 bg-zinc-900 border border-zinc-700 rounded-xl text-white placeholder-zinc-600 focus:outline-none focus:border-amber-500 font-mono text-sm transition-colors"
           />
           {search && (
-            <button
-              onClick={() => setSearch("")}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-500"
-            >
+            <button onClick={() => setSearch("")} className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-500">
               <X className="w-4 h-4" />
             </button>
           )}
@@ -379,29 +394,28 @@ export default function Home() {
       {/* ── LISTA DE PRODUCTOS ── */}
       <div className="px-4 mt-4 space-y-3">
         {filteredProducts.length === 0 && (
-          <div className="text-center py-16 text-zinc-600 font-mono text-sm">
-            Sin resultados
-          </div>
+          <div className="text-center py-16 text-zinc-600 font-mono text-sm">Sin resultados</div>
         )}
 
         {filteredProducts.map((product) => {
           const stock =
-            activeTab === "downstairs"
-              ? product.stock_downstairs
-              : product.stock_upstairs;
+            activeTab === "downstairs" ? product.stock_downstairs : product.stock_upstairs;
           const otherStock =
-            activeTab === "downstairs"
-              ? product.stock_upstairs
-              : product.stock_downstairs;
+            activeTab === "downstairs" ? product.stock_upstairs : product.stock_downstairs;
           const otherLabel = activeTab === "downstairs" ? "Arriba" : "Abajo";
-
-          const empty   = stock === 0;
-          const low     = isLow(stock, product.box_size);
-          const color   = stockColorClass(stock, product.box_size);
+          const empty  = stock === 0;
+          const low    = isLow(stock, product.box_size);
+          const color  = stockColorClass(stock, product.box_size);
           const exactVal = exactInputs[product.id] ?? "";
-
           const isEditing  = editState?.id === product.id;
           const isDeleting = deleteConfirm === product.id;
+
+          // cantidad para agregar al pedido desde esta card
+          const qtyStr = orderQty[product.id] ?? "1";
+          const qty    = Math.max(1, Number(qtyStr) || 1);
+
+          // si ya está en el pedido
+          const inOrder = order.find((i) => i.product.id === product.id);
 
           return (
             <div
@@ -430,27 +444,20 @@ export default function Home() {
 
                 <div className="flex-1 min-w-0">
                   {isEditing ? (
-                    /* ── MODO EDICIÓN ── */
                     <div className="flex flex-col gap-1.5">
                       <input
                         value={editState.name}
-                        onChange={(e) =>
-                          setEditState({ ...editState, name: e.target.value })
-                        }
+                        onChange={(e) => setEditState({ ...editState, name: e.target.value })}
                         placeholder="Nombre"
                         className="w-full bg-zinc-800 border border-amber-500/50 rounded-lg px-2 py-1 text-sm text-white font-mono focus:outline-none focus:border-amber-400"
                       />
                       <div className="flex gap-2">
                         <div className="relative flex-1">
-                          <span className="absolute left-2 top-1/2 -translate-y-1/2 text-zinc-500 text-xs font-mono">
-                            $
-                          </span>
+                          <span className="absolute left-2 top-1/2 -translate-y-1/2 text-zinc-500 text-xs font-mono">$</span>
                           <input
                             type="number"
                             value={editState.price}
-                            onChange={(e) =>
-                              setEditState({ ...editState, price: e.target.value })
-                            }
+                            onChange={(e) => setEditState({ ...editState, price: e.target.value })}
                             placeholder="Precio"
                             className="w-full pl-5 pr-2 py-1 bg-zinc-800 border border-amber-500/50 rounded-lg text-sm text-amber-400 font-mono focus:outline-none"
                           />
@@ -459,24 +466,17 @@ export default function Home() {
                           <input
                             type="number"
                             value={editState.box_size}
-                            onChange={(e) =>
-                              setEditState({ ...editState, box_size: e.target.value })
-                            }
+                            onChange={(e) => setEditState({ ...editState, box_size: e.target.value })}
                             placeholder="u/caja"
                             className="w-full pl-2 pr-11 py-1 bg-zinc-800 border border-zinc-600 rounded-lg text-sm text-blue-400 font-mono focus:outline-none focus:border-blue-500"
                           />
-                          <span className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-600 text-xs font-mono">
-                            u/caja
-                          </span>
+                          <span className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-600 text-xs font-mono">u/caja</span>
                         </div>
                       </div>
                     </div>
                   ) : (
-                    /* ── MODO NORMAL ── */
                     <>
-                      <p className="font-bold text-white truncate text-base leading-tight">
-                        {product.name}
-                      </p>
+                      <p className="font-bold text-white truncate text-base leading-tight">{product.name}</p>
                       <div className="flex items-center gap-3 mt-0.5 flex-wrap">
                         <span className="text-amber-400 font-mono font-bold text-sm">
                           ${product.price.toLocaleString("es-AR")}
@@ -487,63 +487,38 @@ export default function Home() {
                       </div>
                       <div className="flex items-center gap-2 mt-0.5">
                         <span className="text-xs text-zinc-600 font-mono">
-                          {otherLabel}:{" "}
-                          {otherStock === 0
-                            ? "vacío"
-                            : stockLabel(otherStock, product.box_size)}
+                          {otherLabel}: {otherStock === 0 ? "vacio" : stockLabel(otherStock, product.box_size)}
                         </span>
                         <span className="text-zinc-700 font-mono text-xs">·</span>
-                        <span className="text-zinc-700 font-mono text-xs">
-                          caja={product.box_size}u
-                        </span>
+                        <span className="text-zinc-700 font-mono text-xs">caja={product.box_size}u</span>
                       </div>
                     </>
                   )}
                 </div>
 
-                {/* Botones editar/eliminar */}
                 <div className="flex items-center gap-1.5 flex-shrink-0">
                   {isEditing ? (
                     <>
-                      <button
-                        onClick={handleEdit}
-                        className="p-2 bg-emerald-500/20 text-emerald-400 rounded-lg border border-emerald-500/30"
-                      >
+                      <button onClick={handleEdit} className="p-2 bg-emerald-500/20 text-emerald-400 rounded-lg border border-emerald-500/30">
                         <Check className="w-4 h-4" />
                       </button>
-                      <button
-                        onClick={() => setEditState(null)}
-                        className="p-2 bg-zinc-800 text-zinc-500 rounded-lg"
-                      >
+                      <button onClick={() => setEditState(null)} className="p-2 bg-zinc-800 text-zinc-500 rounded-lg">
                         <X className="w-4 h-4" />
                       </button>
                     </>
                   ) : isDeleting ? (
                     <>
-                      <button
-                        onClick={() => handleDelete(product.id)}
-                        className="px-3 py-1.5 bg-red-500/20 text-red-400 rounded-lg border border-red-500/30 text-xs font-mono"
-                      >
+                      <button onClick={() => handleDelete(product.id)} className="px-3 py-1.5 bg-red-500/20 text-red-400 rounded-lg border border-red-500/30 text-xs font-mono">
                         Confirmar
                       </button>
-                      <button
-                        onClick={() => setDeleteConfirm(null)}
-                        className="p-2 bg-zinc-800 text-zinc-500 rounded-lg"
-                      >
+                      <button onClick={() => setDeleteConfirm(null)} className="p-2 bg-zinc-800 text-zinc-500 rounded-lg">
                         <X className="w-4 h-4" />
                       </button>
                     </>
                   ) : (
                     <>
                       <button
-                        onClick={() =>
-                          setEditState({
-                            id:       product.id,
-                            name:     product.name,
-                            price:    String(product.price),
-                            box_size: String(product.box_size),
-                          })
-                        }
+                        onClick={() => setEditState({ id: product.id, name: product.name, price: String(product.price), box_size: String(product.box_size) })}
                         className="p-2 bg-zinc-800 text-zinc-500 hover:text-amber-400 rounded-lg transition-colors"
                       >
                         <Pencil className="w-4 h-4" />
@@ -561,9 +536,7 @@ export default function Home() {
 
               {/* Controles de stock */}
               {!isEditing && !isDeleting && (
-                <div className="px-4 pb-4 space-y-2">
-
-                  {/* Botones de fracción */}
+                <div className="px-4 pb-3 space-y-2">
                   <div className="flex gap-1.5">
                     {BOX_FRACTIONS.map((frac) => {
                       const target   = Math.round(frac.value * product.box_size);
@@ -584,7 +557,6 @@ export default function Home() {
                     })}
                   </div>
 
-                  {/* Input exacto + Transferir */}
                   <div className="flex items-center gap-2">
                     <div className="relative flex-1">
                       <input
@@ -592,12 +564,7 @@ export default function Home() {
                         min={0}
                         placeholder="Cantidad exacta (u.)"
                         value={exactVal}
-                        onChange={(e) =>
-                          setExactInputs((prev) => ({
-                            ...prev,
-                            [product.id]: e.target.value,
-                          }))
-                        }
+                        onChange={(e) => setExactInputs((prev) => ({ ...prev, [product.id]: e.target.value }))}
                         className="w-full pl-3 pr-14 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-white placeholder-zinc-600 font-mono text-sm focus:outline-none focus:border-amber-500"
                       />
                       <button
@@ -606,10 +573,7 @@ export default function Home() {
                           const val = Number(exactVal);
                           if (!isNaN(val) && val >= 0) {
                             handleSetStock(product.id, activeTab, val);
-                            setExactInputs((prev) => ({
-                              ...prev,
-                              [product.id]: "",
-                            }));
+                            setExactInputs((prev) => ({ ...prev, [product.id]: "" }));
                           }
                         }}
                         className="absolute right-1.5 top-1/2 -translate-y-1/2 px-2 py-1 bg-amber-400 disabled:bg-zinc-700 text-zinc-950 disabled:text-zinc-500 rounded-md font-mono text-xs font-bold transition-colors disabled:cursor-not-allowed"
@@ -617,17 +581,70 @@ export default function Home() {
                         SET
                       </button>
                     </div>
-
                     <button
                       onClick={() => handleTransfer(product.id, activeTab)}
                       disabled={stock === 0}
                       className="py-2 px-3 bg-blue-500/20 hover:bg-blue-500/30 text-blue-400 rounded-lg border border-blue-500/30 transition-colors disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-1.5 text-xs font-mono font-bold whitespace-nowrap"
                     >
                       <ArrowLeftRight className="w-3.5 h-3.5" />
-                      {activeTab === "downstairs" ? "→ Arriba" : "→ Abajo"}
+                      {activeTab === "downstairs" ? "-> Arriba" : "-> Abajo"}
                     </button>
                   </div>
 
+                  {/* Fila agregar al pedido */}
+                  <div className="flex items-center gap-2 pt-1 border-t border-zinc-800">
+                    <span className="text-xs text-zinc-600 font-mono flex-shrink-0">Pedido:</span>
+
+                    {/* Qty stepper */}
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() =>
+                          setOrderQty((prev) => ({
+                            ...prev,
+                            [product.id]: String(Math.max(1, qty - 1)),
+                          }))
+                        }
+                        className="w-7 h-7 bg-zinc-800 rounded-md flex items-center justify-center text-zinc-400"
+                      >
+                        <Minus className="w-3 h-3" />
+                      </button>
+                      <input
+                        type="number"
+                        min={1}
+                        value={qtyStr}
+                        onChange={(e) =>
+                          setOrderQty((prev) => ({ ...prev, [product.id]: e.target.value }))
+                        }
+                        className="w-9 text-center bg-zinc-800 border border-zinc-700 rounded-md py-1 text-white font-mono text-xs focus:outline-none focus:border-amber-500"
+                      />
+                      <button
+                        onClick={() =>
+                          setOrderQty((prev) => ({
+                            ...prev,
+                            [product.id]: String(qty + 1),
+                          }))
+                        }
+                        className="w-7 h-7 bg-zinc-800 rounded-md flex items-center justify-center text-zinc-400"
+                      >
+                        <Plus className="w-3 h-3" />
+                      </button>
+                    </div>
+
+                    <button
+                      onClick={() => {
+                        addToOrder(product, qty);
+                        setOrderOpen(true);
+                      }}
+                      className={`flex-1 py-1.5 rounded-lg font-mono text-xs font-bold transition-all border flex items-center justify-center gap-1.5 ${
+                        inOrder
+                          ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/30"
+                          : "bg-zinc-800 text-zinc-400 border-zinc-700 hover:border-emerald-500/40 hover:text-emerald-400"
+                      }`}
+                    >
+                      <ShoppingCart className="w-3 h-3" />
+                      {inOrder ? `En pedido (${inOrder.qty})` : "Agregar al pedido"}
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
@@ -647,19 +664,15 @@ export default function Home() {
                 <X className="w-5 h-5 text-zinc-500" />
               </button>
             </div>
-
             <input
               value={newName}
               onChange={(e) => setNewName(e.target.value)}
               placeholder="Nombre del producto"
               className="w-full px-4 py-3 bg-zinc-800 border border-zinc-700 rounded-xl text-white placeholder-zinc-600 focus:outline-none focus:border-amber-500 font-mono text-sm"
             />
-
             <div className="flex gap-3">
               <div className="relative flex-1">
-                <span className="absolute left-4 top-1/2 -translate-y-1/2 text-zinc-500 font-mono text-sm">
-                  $
-                </span>
+                <span className="absolute left-4 top-1/2 -translate-y-1/2 text-zinc-500 font-mono text-sm">$</span>
                 <input
                   type="number"
                   value={newPrice}
@@ -676,19 +689,15 @@ export default function Home() {
                   placeholder="u/caja"
                   className="w-full pl-4 pr-12 py-3 bg-zinc-800 border border-zinc-700 rounded-xl text-blue-400 placeholder-zinc-600 focus:outline-none focus:border-blue-500 font-mono text-sm"
                 />
-                <span className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-600 font-mono text-xs">
-                  u/caja
-                </span>
+                <span className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-600 font-mono text-xs">u/caja</span>
               </div>
             </div>
-
             <input
               value={newImageUrl}
               onChange={(e) => setNewImageUrl(e.target.value)}
               placeholder="URL de imagen (opcional)"
               className="w-full px-4 py-3 bg-zinc-800 border border-zinc-700 rounded-xl text-white placeholder-zinc-600 focus:outline-none focus:border-amber-500 font-mono text-sm"
             />
-
             <button
               onClick={handleAddProduct}
               disabled={!newName.trim()}
@@ -701,12 +710,111 @@ export default function Home() {
       )}
 
       {/* ── FAB ── */}
-      <button
-        onClick={() => setShowAdd(true)}
-        className="fixed bottom-6 right-6 z-40 w-14 h-14 bg-amber-400 hover:bg-amber-300 text-zinc-950 rounded-full shadow-lg shadow-amber-400/20 flex items-center justify-center transition-all active:scale-95"
-      >
-        <Plus className="w-6 h-6" />
-      </button>
+      {!orderOpen && (
+        <button
+          onClick={() => setShowAdd(true)}
+          className="fixed bottom-24 right-6 z-40 w-12 h-12 bg-amber-400 hover:bg-amber-300 text-zinc-950 rounded-full shadow-lg shadow-amber-400/20 flex items-center justify-center transition-all active:scale-95"
+        >
+          <Plus className="w-5 h-5" />
+        </button>
+      )}
+
+      {/* ── CALCULADORA (barra fija inferior) ── */}
+      <div className="fixed bottom-0 left-0 right-0 z-40 bg-zinc-900 border-t border-zinc-700">
+
+        {/* Panel expandido */}
+        {orderOpen && (
+          <div className="max-h-72 overflow-y-auto divide-y divide-zinc-800">
+            {order.length === 0 ? (
+              <p className="text-center text-zinc-600 font-mono text-sm py-6">
+                Nada agregado todavia
+              </p>
+            ) : (
+              order.map((item) => (
+                <div key={item.product.id} className="flex items-center gap-3 px-4 py-3">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm text-white font-medium truncate">{item.product.name}</p>
+                    <p className="text-xs text-zinc-500 font-mono">
+                      ${item.product.price.toLocaleString("es-AR")} c/u
+                    </p>
+                  </div>
+
+                  {/* Stepper cantidad */}
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={() => updateOrderQty(item.product.id, item.qty - 1)}
+                      className="w-7 h-7 bg-zinc-800 rounded-md flex items-center justify-center text-zinc-400"
+                    >
+                      <Minus className="w-3 h-3" />
+                    </button>
+                    <span className="w-8 text-center font-mono text-sm text-white">{item.qty}</span>
+                    <button
+                      onClick={() => updateOrderQty(item.product.id, item.qty + 1)}
+                      className="w-7 h-7 bg-zinc-800 rounded-md flex items-center justify-center text-zinc-400"
+                    >
+                      <Plus className="w-3 h-3" />
+                    </button>
+                  </div>
+
+                  {/* Subtotal */}
+                  <span className="text-sm font-mono font-bold text-amber-400 w-20 text-right">
+                    ${(item.product.price * item.qty).toLocaleString("es-AR")}
+                  </span>
+
+                  {/* Quitar */}
+                  <button
+                    onClick={() => updateOrderQty(item.product.id, 0)}
+                    className="p-1 text-zinc-600 hover:text-red-400 transition-colors"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              ))
+            )}
+          </div>
+        )}
+
+        {/* Barra inferior siempre visible */}
+        <div
+          className="flex items-center justify-between px-4 py-3 cursor-pointer"
+          onClick={() => setOrderOpen((v) => !v)}
+        >
+          <div className="flex items-center gap-3">
+            <div className="relative">
+              <ShoppingCart className="w-5 h-5 text-amber-400" />
+              {orderCount > 0 && (
+                <span className="absolute -top-1.5 -right-1.5 w-4 h-4 bg-amber-400 text-zinc-950 rounded-full text-xs font-bold flex items-center justify-center leading-none">
+                  {orderCount}
+                </span>
+              )}
+            </div>
+            <span className="font-mono text-xs uppercase tracking-widest text-zinc-400">
+              {orderCount === 0 ? "Pedido vacío" : `${orderCount} item${orderCount > 1 ? "s" : ""}`}
+            </span>
+          </div>
+
+          <div className="flex items-center gap-3">
+            {orderCount > 0 && (
+              <>
+                <span className="font-mono font-bold text-lg text-white">
+                  ${orderTotal.toLocaleString("es-AR")}
+                </span>
+                <button
+                  onClick={(e) => { e.stopPropagation(); clearOrder(); }}
+                  className="px-3 py-1 bg-zinc-800 text-zinc-500 hover:text-red-400 rounded-lg font-mono text-xs transition-colors"
+                >
+                  Limpiar
+                </button>
+              </>
+            )}
+            {orderOpen
+              ? <ChevronDown className="w-4 h-4 text-zinc-500" />
+              : <ChevronUp className="w-4 h-4 text-zinc-500" />
+            }
+          </div>
+        </div>
+      </div>
+
     </div>
   );
 }
