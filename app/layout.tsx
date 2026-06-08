@@ -1,9 +1,8 @@
 import "./globals.css"
 
-
 export const metadata = {
   title: "Stock Cantina SCJ",
-  description: "Sistema de inventario"
+  description: "Sistema de inventario",
 }
 
 export default function RootLayout({
@@ -13,7 +12,7 @@ export default function RootLayout({
 }) {
   return (
     <html lang="es">
-      <body className="bg-gray-100 text-gray-900">
+      <body className="bg-zinc-950 text-white">
         {children}
       </body>
     </html>
